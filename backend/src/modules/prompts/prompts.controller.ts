@@ -8,13 +8,13 @@ import {
   Param,
   Query,
   UseGuards,
+  UseInterceptors,
   Request,
   ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
-  ApiResponse,
   ApiParam,
   ApiQuery,
   ApiBody,
@@ -40,6 +40,9 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SSEService } from '../sse/sse.service';
+import { CacheInterceptor } from '../../common/interceptors/cache.interceptor';
+import { CacheEvictInterceptor } from '../../common/interceptors/cache-evict.interceptor';
+import { Cache, CacheEvict } from '../../common/decorators/cache.decorator';
 
 @ApiTags('prompts')
 @Controller('prompts')
@@ -52,6 +55,8 @@ export class PromptsController {
   ) { }
 
   @Post()
+  @UseInterceptors(CacheEvictInterceptor)
+  @CacheEvict(['prompts', 'user-stats'])
   @ApiOperation({
     summary: '创建新的提示词',
     description: '创建一个新的提示词记录，包含原始文本、目标模型等信息'
@@ -66,7 +71,7 @@ export class PromptsController {
   })
   @ApiBadRequestResponse({ description: '请求参数错误' })
   @ApiUnauthorizedResponse({ description: '未授权访问' })
-  async createPrompt(@Body() createPromptDto: CreatePromptDto, @Request() req) {
+  async createPrompt(@Body() createPromptDto: CreatePromptDto, @Request() req: any) {
     return this.promptsService.create({
       ...createPromptDto,
       userId: req.user.id,
@@ -93,6 +98,31 @@ export class PromptsController {
     @Request() req,
   ) {
     return this.promptsService.optimizePrompt({
+      ...optimizationRequest,
+      userId: req.user.id,
+    });
+  }
+
+  @Post('optimize/rag')
+  @ApiOperation({
+    summary: 'RAG增强的提示词优化',
+    description: '使用RAG知识库增强的AI模型对提示词进行优化，提供更专业的优化建议'
+  })
+  @ApiBody({
+    type: OptimizationRequestDto,
+    description: '优化请求数据'
+  })
+  @ApiOkResponse({
+    description: 'RAG增强优化成功',
+    type: OptimizationResultDto
+  })
+  @ApiBadRequestResponse({ description: '请求参数错误' })
+  @ApiUnauthorizedResponse({ description: '未授权访问' })
+  async optimizePromptWithRAG(
+    @Body() optimizationRequest: OptimizationRequestDto,
+    @Request() req,
+  ) {
+    return this.promptsService.optimizePromptWithRAG({
       ...optimizationRequest,
       userId: req.user.id,
     });
@@ -164,6 +194,8 @@ export class PromptsController {
   }
 
   @Get()
+  @UseInterceptors(CacheInterceptor)
+  @Cache({ ttl: 600, tags: ['prompts'] })
   @ApiOperation({
     summary: '获取用户的提示词列表',
     description: '分页获取当前用户的所有提示词，支持搜索和过滤'
@@ -178,13 +210,15 @@ export class PromptsController {
   })
   @ApiUnauthorizedResponse({ description: '未授权访问' })
   async findUserPrompts(
-    @Request() req,
+    @Request() req: any,
     @Query() queryDto: PromptQueryDto,
   ) {
     return this.promptsService.findByUserId(req.user.id, queryDto);
   }
 
   @Get('stats')
+  @UseInterceptors(CacheInterceptor)
+  @Cache({ ttl: 900, tags: ['user-stats'] })
   @ApiOperation({
     summary: '获取用户统计信息',
     description: '获取当前用户的提示词统计数据'
@@ -194,11 +228,13 @@ export class PromptsController {
     type: UserStatsResponseDto
   })
   @ApiUnauthorizedResponse({ description: '未授权访问' })
-  async getUserStats(@Request() req) {
+  async getUserStats(@Request() req: any) {
     return this.promptsService.getUserStats(req.user.id);
   }
 
   @Get(':id')
+  @UseInterceptors(CacheInterceptor)
+  @Cache({ ttl: 1800, tags: ['prompt-detail'] })
   @ApiOperation({
     summary: '获取单个提示词详情',
     description: '根据ID获取提示词的详细信息'
@@ -210,15 +246,17 @@ export class PromptsController {
   })
   @ApiNotFoundResponse({ description: '提示词不存在' })
   @ApiUnauthorizedResponse({ description: '未授权访问' })
-  async findOne(@Param('id') id: string, @Request() req) {
+  async findOne(@Param('id') id: string, @Request() req: any) {
     return this.promptsService.findOneByUserAndId(req.user.id, id);
   }
 
   @Put(':id')
+  @UseInterceptors(CacheEvictInterceptor)
+  @CacheEvict(['prompts', 'prompt-detail', 'user-stats'])
   async updatePrompt(
     @Param('id') id: string,
     @Body() updatePromptDto: UpdatePromptDto,
-    @Request() req,
+    @Request() req: any,
   ) {
     return this.promptsService.update(req.user.id, id, updatePromptDto);
   }

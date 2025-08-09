@@ -10,6 +10,7 @@ import { OptimizationRulesEngine } from './services/optimization-rules-engine.se
 import { BestPracticesService } from './services/best-practices.service';
 import { ModelsModule } from '../models/models.module';
 import { SSEModule } from '../sse/sse.module';
+import { RAGModule } from '../rag/rag.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { SSEModule } from '../sse/sse.module';
     ]),
     ModelsModule,
     SSEModule,
+    RAGModule,
   ],
   controllers: [PromptsController],
   providers: [

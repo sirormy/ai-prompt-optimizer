@@ -12,6 +12,9 @@ import {
 import { PromptOptimizationService } from './services/prompt-optimization.service';
 import { OptimizationRequest, OptimizationResult } from '../models/dto';
 import { SSEService } from '../sse/sse.service';
+import { RedisService } from '../redis/redis.service';
+import { RAGService } from '../rag/rag.service';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class PromptsService {
@@ -20,6 +23,8 @@ export class PromptsService {
   constructor(
     @InjectModel(Prompt.name) private promptModel: Model<PromptDocument>,
     private promptOptimizationService: PromptOptimizationService,
+    private redisService: RedisService,
+    private ragService: RAGService,
   ) {}
 
   /**
@@ -58,6 +63,16 @@ export class PromptsService {
   ): Promise<OptimizationResult> {
     this.logger.log(`Starting prompt optimization for user: ${optimizationRequest.userId}`);
     
+    // 生成缓存键
+    const cacheKey = this.generateOptimizationCacheKey(optimizationRequest);
+    
+    // 尝试从缓存获取结果
+    const cachedResult = await this.redisService.getCachedOptimizationResult(cacheKey);
+    if (cachedResult) {
+      this.logger.log(`Using cached optimization result for user: ${optimizationRequest.userId}`);
+      return cachedResult;
+    }
+    
     // 转换DTO为内部请求格式
     const request: OptimizationRequest = {
       prompt: optimizationRequest.prompt,
@@ -71,10 +86,85 @@ export class PromptsService {
     // 使用核心优化服务
     const result = await this.promptOptimizationService.optimizePrompt(request);
 
+    // 缓存优化结果（1小时）
+    await this.redisService.cacheOptimizationResult(cacheKey, result, 3600);
+
     // 保存优化结果到数据库
     await this.saveOptimizationResult(result, optimizationRequest.userId, optimizationRequest);
 
     return result;
+  }
+
+  /**
+   * 使用RAG增强的提示词优化
+   */
+  async optimizePromptWithRAG(
+    optimizationRequest: OptimizationRequestDto & { userId: string },
+  ): Promise<OptimizationResult & { ragEnhancement?: any }> {
+    this.logger.log(`Starting RAG-enhanced prompt optimization for user: ${optimizationRequest.userId}`);
+    
+    try {
+      // 使用RAG服务获取增强建议
+      const ragResponse = await this.ragService.enhancePromptWithRAG({
+        prompt: optimizationRequest.prompt,
+        targetModel: this.mapTargetModel(optimizationRequest.targetModel),
+        includeExamples: optimizationRequest.optimizationLevel === 'expert',
+      });
+
+      // 使用RAG增强的提示词进行优化
+      const enhancedRequest: OptimizationRequest = {
+        prompt: ragResponse.enhancedPrompt,
+        targetModel: this.mapTargetModel(optimizationRequest.targetModel),
+        messageRole: optimizationRequest.messageRole,
+        systemPrompt: optimizationRequest.systemPrompt,
+        optimizationLevel: optimizationRequest.optimizationLevel || 'basic',
+        userId: optimizationRequest.userId,
+      };
+
+      // 获取RAG优化建议
+      const ragSuggestions = await this.ragService.generateOptimizationSuggestions({
+        originalPrompt: optimizationRequest.prompt,
+        targetModel: this.mapTargetModel(optimizationRequest.targetModel),
+        userPreferences: {
+          optimizationLevel: optimizationRequest.optimizationLevel || 'basic',
+          includeExplanations: true,
+        },
+      });
+
+      // 使用核心优化服务
+      const result = await this.promptOptimizationService.optimizePrompt(enhancedRequest);
+
+      // 合并RAG建议到结果中
+      const enhancedResult = {
+        ...result,
+        ragEnhancement: {
+          confidence: ragResponse.confidence,
+          relevantPractices: ragResponse.relevantPractices,
+          ragSuggestions: ragResponse.suggestions,
+          improvements: ragSuggestions.improvements,
+        },
+        // 合并建议
+        suggestions: [
+          ...(result.suggestions || []),
+          ...ragSuggestions.suggestions.map(suggestion => ({
+            id: Math.random().toString(36).substr(2, 9),
+            type: 'rag',
+            title: 'RAG建议',
+            description: suggestion,
+            priority: 'medium' as const,
+          })),
+        ],
+      };
+
+      // 保存增强的优化结果
+      await this.saveOptimizationResult(enhancedResult, optimizationRequest.userId, optimizationRequest);
+
+      return enhancedResult;
+    } catch (error) {
+      this.logger.error('RAG-enhanced optimization failed, falling back to standard optimization:', error);
+      // 如果RAG失败，回退到标准优化
+      return this.optimizePrompt(optimizationRequest);
+    }
   }
 
   /**
@@ -318,6 +408,13 @@ export class PromptsService {
   ): Promise<{ prompts: Prompt[]; total: number; page: number; limit: number }> {
     this.logger.log(`Fetching prompts for user: ${userId} with query:`, queryDto);
     
+    // 尝试从缓存获取结果
+    const cachedResult = await this.redisService.getCachedPromptHistory(userId, queryDto);
+    if (cachedResult) {
+      this.logger.log(`Using cached prompt history for user: ${userId}`);
+      return cachedResult;
+    }
+    
     const { page = 1, limit = 10, search, tags, provider, isFavorite, isArchived, sortBy, sortOrder } = queryDto;
     const skip = (page - 1) * limit;
 
@@ -375,12 +472,17 @@ export class PromptsService {
       this.promptModel.countDocuments(query),
     ]);
 
-    return {
+    const result = {
       prompts,
       total,
       page,
       limit,
     };
+
+    // 缓存结果（10分钟）
+    await this.redisService.cachePromptHistory(userId, queryDto, result, 600);
+
+    return result;
   }
 
   /**
@@ -388,6 +490,22 @@ export class PromptsService {
    */
   async findOneByUserAndId(userId: string, id: string): Promise<Prompt> {
     this.logger.log(`Fetching prompt ${id} for user: ${userId}`);
+    
+    // 尝试从缓存获取
+    const cacheKey = `prompt:${userId}:${id}`;
+    const cachedPrompt = await this.redisService.get(cacheKey);
+    
+    if (cachedPrompt) {
+      this.logger.log(`Using cached prompt ${id} for user: ${userId}`);
+      const prompt = JSON.parse(cachedPrompt);
+      
+      // 异步更新查看统计（不阻塞响应）
+      this.updateViewCount(id).catch(error => 
+        this.logger.error(`Failed to update view count for prompt ${id}:`, error)
+      );
+      
+      return prompt;
+    }
     
     const prompt = await this.promptModel.findOne({ 
       _id: id, 
@@ -398,7 +516,16 @@ export class PromptsService {
       throw new NotFoundException(`Prompt with ID ${id} not found`);
     }
 
+    // 缓存提示词（30分钟）
+    await this.redisService.set(cacheKey, JSON.stringify(prompt), 1800);
+
     // 更新查看统计
+    await this.updateViewCount(id);
+
+    return prompt;
+  }
+
+  private async updateViewCount(id: string): Promise<void> {
     await this.promptModel.updateOne(
       { _id: id },
       { 
@@ -406,8 +533,6 @@ export class PromptsService {
         $set: { lastViewedAt: new Date() }
       }
     );
-
-    return prompt;
   }
 
   /**
@@ -439,6 +564,9 @@ export class PromptsService {
     if (!updatedPrompt) {
       throw new NotFoundException(`Prompt with ID ${id} not found`);
     }
+
+    // 失效相关缓存
+    await this.invalidatePromptCaches(userId, id);
 
     return updatedPrompt;
   }
@@ -598,6 +726,13 @@ export class PromptsService {
   async getUserStats(userId: string): Promise<any> {
     this.logger.log(`Getting stats for user: ${userId}`);
 
+    // 尝试从缓存获取统计信息
+    const cachedStats = await this.redisService.getUserData(userId, 'stats');
+    if (cachedStats) {
+      this.logger.log(`Using cached stats for user: ${userId}`);
+      return cachedStats;
+    }
+
     const stats = await this.promptModel.aggregate([
       { $match: { userId: new Types.ObjectId(userId) } },
       {
@@ -620,7 +755,7 @@ export class PromptsService {
       .select('title updatedAt')
       .exec();
 
-    return {
+    const result = {
       ...(stats[0] || {
         totalPrompts: 0,
         favoritePrompts: 0,
@@ -631,5 +766,49 @@ export class PromptsService {
       }),
       recentActivity,
     };
+
+    // 缓存统计信息（15分钟）
+    await this.redisService.cacheUserData(userId, 'stats', result, 900);
+
+    return result;
+  }
+
+  /**
+   * 生成优化缓存键
+   */
+  private generateOptimizationCacheKey(request: OptimizationRequestDto & { userId: string }): string {
+    const keyData = {
+      prompt: request.prompt,
+      targetModel: request.targetModel,
+      messageRole: request.messageRole,
+      systemPrompt: request.systemPrompt,
+      optimizationLevel: request.optimizationLevel,
+    };
+    
+    const hash = crypto.createHash('sha256')
+      .update(JSON.stringify(keyData))
+      .digest('hex');
+    
+    return `optimization:${hash}`;
+  }
+
+  /**
+   * 失效提示词相关缓存
+   */
+  private async invalidatePromptCaches(userId: string, promptId?: string): Promise<void> {
+    try {
+      // 失效用户相关的缓存
+      await this.redisService.invalidateByTag(`user:${userId}`);
+      
+      if (promptId) {
+        // 失效特定提示词缓存
+        const promptCacheKey = `prompt:${userId}:${promptId}`;
+        await this.redisService.del(promptCacheKey);
+      }
+      
+      this.logger.log(`Invalidated caches for user: ${userId}, prompt: ${promptId || 'all'}`);
+    } catch (error) {
+      this.logger.error(`Failed to invalidate caches for user ${userId}:`, error);
+    }
   }
 }

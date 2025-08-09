@@ -1,3 +1,4 @@
+/* 重置样式 */
 * {
   box-sizing: border-box;
   padding: 0;
@@ -8,39 +9,135 @@ html,
 body {
   max-width: 100vw;
   overflow-x: hidden;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
+    sans-serif;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  background: #f5f5f5;
+  color: #000000d9;
+  line-height: 1.5715;
 }
 
+/* 链接样式 */
 a {
   color: inherit;
   text-decoration: none;
+  transition: color 0.3s;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
+a:hover {
+  color: #1890ff;
+}
+
+/* 响应式工具类 */
+.mobile-only {
+  display: none;
+}
+
+.desktop-only {
+  display: block;
+}
+
+@media (max-width: 768px) {
+  .mobile-only {
+    display: block;
+  }
+
+  .desktop-only {
+    display: none;
   }
 }
 
-:root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
-  --background-end-rgb: 255, 255, 255;
+/* 移动端优化 */
+@media (max-width: 768px) {
+  body {
+    font-size: 16px; /* 防止iOS缩放 */
+  }
+
+  /* 触摸优化 */
+  button,
+  .ant-btn {
+    min-height: 44px; /* iOS推荐的最小触摸目标 */
+  }
+
+  /* 输入框优化 */
+  input,
+  textarea,
+  .ant-input,
+  .ant-input-affix-wrapper {
+    font-size: 16px; /* 防止iOS缩放 */
+  }
 }
 
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* 深色模式支持 */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 0, 0, 0;
-    --background-end-rgb: 0, 0, 0;
+  body {
+    background: #000000;
+    color: #ffffffd9;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #1f1f1f;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #434343;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #595959;
+  }
+}
+
+/* 动画优化 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 高对比度模式支持 */
+@media (prefers-contrast: high) {
+  a {
+    text-decoration: underline;
+  }
+}
+
+/* 打印样式 */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .no-print {
+    display: none !important;
   }
 }

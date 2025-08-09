@@ -1,6 +1,6 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
@@ -9,12 +9,19 @@ import { AuthModule } from './modules/auth/auth.module';
 import { PromptsModule } from './modules/prompts/prompts.module';
 import { ModelsModule } from './modules/models/models.module';
 import { SSEModule } from './modules/sse/sse.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { RAGModule } from './modules/rag/rag.module';
 import { ServiceRegistryService } from './common/services/service-registry.service';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
 import { CorsMiddleware } from './common/middleware/cors.middleware';
+import { CacheInterceptor } from './common/interceptors/cache.interceptor';
+import { CacheEvictInterceptor } from './common/interceptors/cache-evict.interceptor';
+import { PromptIndexService } from './database/indexes/prompt.indexes';
+import { DatabaseOptimizationService } from './modules/database/database-optimization.service';
 import databaseConfig from './config/database.config';
 import redisConfig from './config/redis.config';
+import ragConfig from './config/rag.config';
 
 @Module({
   imports: [
@@ -22,7 +29,7 @@ import redisConfig from './config/redis.config';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
-      load: [databaseConfig, redisConfig],
+      load: [databaseConfig, redisConfig, ragConfig],
     }),
     
     // 数据库模块
@@ -36,15 +43,28 @@ import redisConfig from './config/redis.config';
     PromptsModule,
     ModelsModule,
     SSEModule,
+    AnalyticsModule,
+    RAGModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
     ServiceRegistryService,
+    PromptIndexService,
+    DatabaseOptimizationService,
     // 全局异常过滤器
     {
       provide: APP_FILTER,
       useClass: HttpExceptionFilter,
+    },
+    // 全局缓存拦截器
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: CacheInterceptor,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: CacheEvictInterceptor,
     },
   ],
 })
